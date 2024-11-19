@@ -1,0 +1,6 @@
+1. Capture CWND using ftrace:
+	sudo trace-cmd record -e 'tcp:tcp_probe' -o fg_bbr_bg.dat
+2. Analyse the captured ftrace .dat file:
+	sudo trace-cmd report -i fg_bbr.dat | grep "192.168.254.11:5201" | awk '{for (i=1; i<=NF; i++) if ($i ~ /snd_cwnd=/) {split($i, a, "="); print $3","a[2]}}' > fg_bbr.txt3. Remove unwanted lines:
+	ftrace: sed -i 's/:,/,/' fg_bbr_bg.txt
+	ss: sed -i '/64088$/d' fg_cubic.csv
