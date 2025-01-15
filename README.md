@@ -1,2 +1,2 @@
 # QUICexperiments
-Contains all the data collected from the TCP vs QUIC experiment
+Contains the mininet experiment setup to replicate 'When and when not to use BBR'
