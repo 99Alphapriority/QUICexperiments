@@ -1,45 +1,49 @@
 #!/bin/bash
 
 # Assign arguments to variables
-src_file_path=$1
-receiver_IP_address=$2
-num_of_runs=$3
-dest_file_path=$4
-background_CCA=$5
+num_of_runs=$1
 
-if [ "$#" -ne 5 ]; then
-    echo "Usage: $0 <src_file_path> <receiver_IP_address> <num_of_runs> <dest_file_path> <background_CCA>"
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <num_of_runs>"
     exit 1
 fi
 
-dir1=TCP_fg_CUBIC_bg_$background_CCA
-dir2=TCP_fg_BBR_bg_$background_CCA
+parent_dir=TCP_fg_BBR_bg_CUBIC
+queue_size_mb=("0.5" "1" "1.5" "2" "2.5" "3" "3.5" "4" "4.5" "5" "5.5" "6" "7" "7.5" "8.5" "10" "11" "12.5" "15" "17.5" "20" "50")
+queue_size_bytes=("524288" "1048576" "1572864" "2097152" "2621440" "3145728" "3670016" "4194304" "4718592" "5242880" "5767168" "6291456" "7340032" "7864320" "8912896" "10485760" "11534336" "13107200" "15728640" "18350080" "20971520" "52428800")
 
-mkdir $dir1
-echo "Create directory: $dir1"
-mkdir $dir2
-echo "Create directory: $dir2"
+mkdir $parent_dir
+echo "Create directory: /users/prajneet/$dir"
 
-# Compute and store the MD5SUM of the file to send
-src_file_md5=$(md5sum "$src_file_path" | awk '{ print $1 }')
-echo "src file $src_file_path md5sum: $src_file_md5"
+echo "Switching CCA to BBR on 192.168.X.11 machines"
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+ssh prajneet@192.168.254.11 "sudo sysctl -w net.ipv4.tcp_congestion_control=bbr"
 
-for((j = 1; j <=2; j++))
+echo "Starting the servers on both the machines"
+ssh prajneet@192.168.254.11 "pkill iperf3"
+ssh prajneet@192.168.254.31 "pkill iperf3"
+ssh prajneet@192.168.254.11 "iperf-reliable/src/iperf3 -s -F /dev/null -d -r 2>&1 &" 2>&1 &
+ssh prajneet@192.168.254.31 "iperf-reliable_bg/src/iperf3 -s -F /dev/null -d -r 2>&1 &" 2>&1 &
+sleep 5
+
+for i in "${!queue_size_bytes[@]}"
 do
-	if [ "$j" -eq 1 ]; then
-		dir="$dir1"
-	else
-		dir="$dir2"
-	fi
-	echo "Using directory: $dir"
-# Loop N times
-	for ((i=1; i<=num_of_runs; i++))
+	dir="$parent_dir/${queue_size_mb[i]}MB_queue"
+	mkdir $dir
+	echo "changing queue size to ${queue_size_mb[i]} MB"
+	source /proj/FEC-HTTP/nenv/bin/activate
+	python3 /proj/FEC-HTTP/long-quic/long-look-quic/test_src/dumbbell_traffic_shaping.py 1000 20 0 "${queue_size_bytes[i]}"
+	deactivate
+	sleep 10
+	for((i = 1; i <=num_of_runs; i++))
 	do
 		echo "Starting iteration $i of $num_of_runs..."
 
+
 		# Use iperf-reliable to transfer file
 		echo "Starting file transfer to $receiver_IP_address using iperf-reliable"
-		iperf-reliable/src/iperf3 -c "$receiver_IP_address" -F "$src_file_path"
+		ssh prajneet@192.168.253.31 "iperf-reliable_bg/src/iperf3 -t 600 -c 192.168.254.31 -F /dev/random 2>&1 &" 2>&1 & 
+		iperf-reliable/src/iperf3 -t 600 -c 192.168.254.11 -F /dev/random 
 
 		# Check if the file transfer was successful
 		if [ $? -eq 0 ]; then
@@ -48,43 +52,22 @@ do
 			echo "File transfer failed (Iteration $i). Aborting script."
 			exit 1
 		fi
-
-		# SSH into the server and compute the MD5 checksum of the transferred file
-		echo "Verifying MD5 checksum on remote server (Iteration $i)..."
-		dest_file_md5=$(ssh <user_name>@"$receiver_IP_address" "md5sum $dest_file_path | awk '{ print \$1 }'")
 	
-		#Compare the expected and received MD5SUM
-		if [ "$dest_file_md5" != "$src_file_md5" ]; then
-			echo "MD5 checksum on the remote server does not match (Iteration $i). Aborting script."
-			exit 1
-		else
-			echo "MD5 checksum matches on the remote server (Iteration $i)!"
-		fi
+		sleep 10
 
-		# SSH into the server and delete the file after the checksum check
-    		echo "Deleting the file on the remote server (Iteration $i)..."
-    		ssh <user_name>@"$receiver_IP_address" "rm -f $dest_file_path"
-    
-    		# Check if the deletion was successful
-		if [ $? -eq 0 ]; then
-			echo "File deleted successfully from remote server (Iteration $i)."
-		else
-			echo "Failed to delete file from remote server (Iteration $i)."
-        		exit 1
-		fi
-
-		mv "/users/prajneet/iperf_reliable_results/get_results.json" "$dir/get_results_$i.json"
-		mv "/users/prajneet/iperf_reliable_results/send_results.json" "$dir/send_results_$i.json"
+		mv "/users/prajneet/iperf_reliable_results/get_results_fg.json" "$dir/get_results_"$i"_fg.json"
+		mv "/users/prajneet/iperf_reliable_results/send_results_fg.json" "$dir/send_results_"$i"_fg.json"
+		mv "/users/prajneet/iperf_reliable_results/get_results_bg.json" "$dir/send_results_"$i"_bg.json"
+		mv "/users/prajneet/iperf_reliable_results/send_results_bg.json" "$dir/get_results_"$i"_bg.json"
 
 		echo "Iteration $i of $num_of_runs completed successfully."
+
 	done
 
-	echo "All $num_of_runs iterations completed successfully!"
-	echo "Changing the CCA to BBR"
-	if [ "$j" -eq 1 ]; then
-		./enable_bbr.sh
-		ssh <user_name>@"$receiver_IP_address" "./enable_bbr.sh"
-	fi
 done
-./disable_bbr.sh
-ssh <user_name>@"$receiver_IP_address" "./disable_bbr.sh"
+ssh prajneet@192.168.254.11 "pkill iperf3"
+ssh prajneet@192.168.254.31 "pkill iperf3"
+
+echo "Switching CCA back to CUBIC on 192.168.X.11 machines"
+ssh prajneet@192.168.254.11 "sudo sysctl -w net.ipv4.tcp_congestion_control=cubic"
+sudo sysctl -w net.ipv4.tcp_congestion_control=cubic
